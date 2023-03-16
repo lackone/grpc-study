@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+option go_package = ".;proto";
+
+package proto;
+
+import "common.proto";
+
+service ArticleService {
+  rpc GetArticleList(GetArticleRequest) returns(GetArticleResponse) {}
+}
+
+message GetArticleRequest {
+  int32 page = 1;
+  int32 size = 2;
+}
+
+message Article {
+  int32 id = 1;
+  string title = 2;
+}
+
+message GetArticleResponse {
+  repeated Article list = 1;
+  Pager pager = 2;
+}

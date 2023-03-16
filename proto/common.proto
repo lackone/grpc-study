@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+option go_package = ".;proto";
+
+package proto;
+
+import "google/protobuf/any.proto";
+
+message Pager {
+  int32 page = 1;
+  int32 size = 2;
+  int32 total_rows = 3;
+}
+
+message Error {
+  int32 code = 1;
+  string message = 2;
+  google.protobuf.Any detail = 3;
+}
