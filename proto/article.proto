@@ -5,9 +5,14 @@ option go_package = ".;proto";
 package proto;
 
 import "common.proto";
+import "google/api/annotations.proto";
 
 service ArticleService {
-  rpc GetArticleList(GetArticleRequest) returns(GetArticleResponse) {}
+  rpc GetArticleList(GetArticleRequest) returns(GetArticleResponse) {
+    option (google.api.http) = {
+      get: "/v1/get_article_list"
+    };
+  }
 }
 
 message GetArticleRequest {

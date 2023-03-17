@@ -2,72 +2,93 @@ package main
 
 import (
 	"context"
+	"flag"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lackone/grpc-study/pkg/db"
 	"github.com/lackone/grpc-study/pkg/errcode"
 	"github.com/lackone/grpc-study/pkg/model"
+	"github.com/lackone/grpc-study/pkg/service"
 	pb "github.com/lackone/grpc-study/proto"
+	"golang.org/x/net/http2"
+	"golang.org/x/net/http2/h2c"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection"
-	"net"
+	"net/http"
+	"strings"
 )
 
-type ArticleService struct {
-	pb.UnimplementedArticleServiceServer
-}
+var port string
 
-func (a *ArticleService) GetArticleList(ctx context.Context, req *pb.GetArticleRequest) (*pb.GetArticleResponse, error) {
-	page := req.GetPage()
-	size := req.GetSize()
-
-	if page <= 0 || size <= 0 {
-		return nil, errcode.TogRPCError(errcode.ErrorGetArticleListRequestFail)
-	}
-
-	offset := (page - 1) * size
-
-	var articles []*pb.Article
-	db.DB.Model(&model.Article{}).Select("id, title").Order("id desc").Limit(int(size)).Offset(int(offset)).Find(&articles)
-
-	var totalRows int32
-	db.DB.Model(&model.Article{}).Select("count(*) as cnt").Pluck("cnt", &totalRows)
-
-	return &pb.GetArticleResponse{
-		List: articles,
-		Pager: &pb.Pager{
-			Page:      page,
-			Size:      size,
-			TotalRows: totalRows,
-		},
-	}, nil
+func init() {
+	flag.StringVar(&port, "port", "8080", "启动端口号")
+	flag.Parse()
 }
 
 func main() {
 	initTestData()
 
-	server := grpc.NewServer()
+	RunServer(port)
+}
 
-	pb.RegisterArticleServiceServer(server, &ArticleService{})
-	//注册了反射服务，使grpcurl可以使用
+func RunServer(port string) error {
+	httpMux := NewHttpServer()
+	grpcServer := NewGrpcServer()
+	gwMux := NewGrpcGatewayServer(port)
+
+	httpMux.Handle("/", gwMux)
+	return http.ListenAndServe(":"+port, grpcHandlerFunc(grpcServer, httpMux))
+}
+
+func grpcHandlerFunc(grpcServer *grpc.Server, otherHandler http.Handler) http.Handler {
+	return h2c.NewHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.ProtoMajor == 2 && strings.Contains(r.Header.Get("Content-Type"), "application/grpc") {
+			grpcServer.ServeHTTP(w, r)
+		} else {
+			otherHandler.ServeHTTP(w, r)
+		}
+	}), &http2.Server{})
+}
+
+// grpc-gateway服务
+func NewGrpcGatewayServer(port string) *runtime.ServeMux {
+	endpoint := "127.0.0.1:" + port
+
+	mux := runtime.NewServeMux(
+		runtime.WithErrorHandler(errcode.GrpcGatewayError),
+	)
+
+	pb.RegisterArticleServiceHandlerFromEndpoint(context.Background(), mux, endpoint, []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	})
+
+	return mux
+}
+
+// http服务
+func NewHttpServer() *http.ServeMux {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("test"))
+	})
+
+	return mux
+}
+
+// grpc服务
+func NewGrpcServer() *grpc.Server {
+	opts := []grpc.ServerOption{}
+
+	server := grpc.NewServer(opts...)
+
+	//注册服务
+	pb.RegisterArticleServiceServer(server, &service.ArticleService{})
 	reflection.Register(server)
 
-	listen, err := net.Listen("tcp", ":8080")
-	if err != nil {
-		panic(err)
-	}
-
-	server.Serve(listen)
+	return server
 }
 
 func initTestData() {
 	db.DB.AutoMigrate(&model.Article{})
-
-	db.DB.Create(&model.Article{
-		Title: "aaa",
-	})
-	db.DB.Create(&model.Article{
-		Title: "bbb",
-	})
-	db.DB.Create(&model.Article{
-		Title: "ccc",
-	})
 }
