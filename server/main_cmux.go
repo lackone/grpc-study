@@ -2,16 +2,26 @@ package main
 
 import (
 	"context"
+	"fmt"
+	assetfs "github.com/elazarl/go-bindata-assetfs"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lackone/grpc-study/pkg/errcode"
+	"github.com/lackone/grpc-study/pkg/middleware"
 	"github.com/lackone/grpc-study/pkg/service"
+	"github.com/lackone/grpc-study/pkg/swagger"
 	pb "github.com/lackone/grpc-study/proto"
 	"github.com/soheilhy/cmux"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
+	"google.golang.org/grpc/status"
 	"net"
 	"net/http"
+	"path"
+	"strings"
 )
 
 type Server struct {
@@ -103,6 +113,26 @@ func main() {
 				mux.Handle("/", s.gwMux)
 			}
 
+			//配置swagger-ui
+			prefix := "/swagger-ui/"
+			fileServer := http.FileServer(&assetfs.AssetFS{
+				Asset:    swagger.Asset,
+				AssetDir: swagger.AssetDir,
+				Prefix:   "third_party/swagger-ui",
+			})
+			mux.Handle(prefix, http.StripPrefix(prefix, fileServer))
+
+			//读取swagger.json文件
+			mux.HandleFunc("/swagger/", func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasSuffix(r.URL.Path, "swagger.json") {
+					http.NotFound(w, r)
+					return
+				}
+				p := strings.TrimPrefix(r.URL.Path, "/swagger/")
+				p = path.Join("proto", p)
+				http.ServeFile(w, r, p)
+			})
+
 			mux.HandleFunc("/test", func(w http.ResponseWriter, r *http.Request) {
 				w.Write([]byte("test"))
 			})
@@ -114,7 +144,30 @@ func main() {
 			server.Serve(s.httpListen)
 		}),
 		WithGrpc(func(ctx context.Context, s *Server) {
-			server := grpc.NewServer()
+			//拦截器
+			opts := []grpc.ServerOption{
+				//添加拦载器
+				grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+					func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
+						//获取客户端传过来的metadata
+						md, ok := metadata.FromIncomingContext(ctx)
+						if !ok {
+							return resp, status.Error(codes.Unauthenticated, "token不正确")
+						}
+
+						fmt.Println(md)
+
+						return handler(ctx, req)
+					},
+					//TestInterceptor,
+					//HelloInterceptor,
+					middleware.AccessLog,
+					middleware.Error,
+					middleware.Recovery,
+				)),
+			}
+
+			server := grpc.NewServer(opts...)
 			pb.RegisterArticleServiceServer(server, &service.ArticleService{})
 			reflection.Register(server)
 			server.Serve(s.grpcListen)
@@ -134,4 +187,26 @@ func main() {
 	}
 
 	s.Start()
+}
+
+// 一种类型的拦截器只允许设置一个，通过grpc_middleware可以设置多个
+func TestInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	fmt.Println("test调用之前")
+
+	resp, err := handler(ctx, req)
+
+	fmt.Println("test调用之后")
+
+	return resp, err
+}
+
+// 一种类型的拦截器只允许设置一个，通过grpc_middleware可以设置多个
+func HelloInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	fmt.Println("hello调用之前")
+
+	resp, err := handler(ctx, req)
+
+	fmt.Println("hello调用之后")
+
+	return resp, err
 }
