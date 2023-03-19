@@ -5,7 +5,10 @@ import (
 	"fmt"
 	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	grpc_retry "github.com/grpc-ecosystem/go-grpc-middleware/retry"
+	"github.com/lackone/grpc-study/pkg/middleware"
+	"github.com/lackone/grpc-study/pkg/tracer"
 	pb "github.com/lackone/grpc-study/proto"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -30,10 +33,24 @@ func (a *Auth) RequireTransportSecurity() bool {
 }
 
 func main() {
+	tp, err := tracer.InitTracerProvider("127.0.0.1", "6831", "grpc-client")
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Fatalln(err)
+		}
+	}()
+
 	opts := []grpc.DialOption{
 		//客户端的拦截器
 		grpc.WithUnaryInterceptor(
 			grpc_middleware.ChainUnaryClient(
+				otelgrpc.UnaryClientInterceptor(),
+
+				middleware.UnaryContextTimeout(),
 
 				//grpc重试操作
 				grpc_retry.UnaryClientInterceptor(
@@ -44,6 +61,12 @@ func main() {
 						codes.DeadlineExceeded,
 					),
 				),
+			),
+		),
+		grpc.WithStreamInterceptor(
+			grpc_middleware.ChainStreamClient(
+				otelgrpc.StreamClientInterceptor(),
+				middleware.StreamContextTimeout(),
 			),
 		),
 		//RPC方法做自定义认证

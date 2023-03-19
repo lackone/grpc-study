@@ -10,14 +10,17 @@ import (
 	"github.com/lackone/grpc-study/pkg/middleware"
 	"github.com/lackone/grpc-study/pkg/service"
 	"github.com/lackone/grpc-study/pkg/swagger"
+	"github.com/lackone/grpc-study/pkg/tracer"
 	pb "github.com/lackone/grpc-study/proto"
 	"github.com/soheilhy/cmux"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection"
 	"google.golang.org/grpc/status"
+	"log"
 	"net"
 	"net/http"
 	"path"
@@ -104,6 +107,17 @@ func (s *Server) Start() error {
 }
 
 func main() {
+	tp, err := tracer.InitTracerProvider("127.0.0.1", "6831", "grpc-server")
+	if err != nil {
+		panic(err)
+	}
+
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			log.Fatalln(err)
+		}
+	}()
+
 	s, err := NewServer(
 		WithEndpoint("127.0.0.1:8080"),
 		WithHttp(func(ctx context.Context, s *Server) {
@@ -148,6 +162,7 @@ func main() {
 			opts := []grpc.ServerOption{
 				//添加拦载器
 				grpc.UnaryInterceptor(grpc_middleware.ChainUnaryServer(
+					otelgrpc.UnaryServerInterceptor(),
 					func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp interface{}, err error) {
 						//获取客户端传过来的metadata
 						md, ok := metadata.FromIncomingContext(ctx)
@@ -159,11 +174,12 @@ func main() {
 
 						return handler(ctx, req)
 					},
-					//TestInterceptor,
-					//HelloInterceptor,
 					middleware.AccessLog,
 					middleware.Error,
 					middleware.Recovery,
+				)),
+				grpc.StreamInterceptor(grpc_middleware.ChainStreamServer(
+					otelgrpc.StreamServerInterceptor(),
 				)),
 			}
 
